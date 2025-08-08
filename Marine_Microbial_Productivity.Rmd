@@ -1,0 +1,566 @@
+---
+title: "Longhurst Data"
+date: "2025-06-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+suppressPackageStartupMessages({
+  library(devtools)
+  library(phyloseq)
+  library(microViz)
+  library(vegan)
+  library(ggpubr)
+  library(dplyr)
+  library(sf)
+  library(geosphere)
+  library(leaflet)
+  library(rnaturalearth)
+  library(rnaturalearthdata)
+  library(ggplot2)
+  library(ggthemes)
+  library(tinytex)
+  library(performance)
+  library(multcompView)
+  library(multcomp)
+})
+
+library(dplyr)
+library(emmeans)
+library(performance)
+library(multcompView)
+library(multcomp)
+
+devtools::install_github("david-barnett/microViz")
+setwd("~/Desktop/BEE/Macroeco/Practical/Case_Study") # Change your work directory
+```
+# Match Data
+## Load in Longhurst Data & Match columns from Clara's Data Set
+```{r}
+## load longhurst data from clara
+lc <- read.csv("~/Desktop/BEE/Macroeco/Practical/Case_Study/Data/longhurst_v4_2010/Longhurst_Province_Summary.csv", sep = ";")
+## load longhurst data
+longhurst <- st_read("~/Desktop/BEE/Macroeco/Practical/Case_Study/Data/longhurst_v4_2010/Longhurst_world_v4_2010.shp")
+## load phyloseq data
+pw <- readRDS("~/Desktop/BEE/Macroeco/Practical/Case_Study/Data/MiCoDaV2_PrimerV4_Water_OnlyOcean.rds")
+# ps <- readRDS("physeq_subset_soil_Filtered2025_updated.rds")
+
+#rename column to match lc
+ longhurst <- longhurst %>%
+  rename(PROVCODE = ProvCode)
+## match Chl.class. data from lc into longhurst by matching on PROVCODE
+ longhurst <- longhurst %>%
+  left_join(lc %>% select(PROVCODE, Prod.Class.), by = "PROVCODE")
+head(longhurst)
+any(is.na(lc$Chl.class.))  # See if any PROVCODEs had no match --> doesnt matter here bc in graph its grey
+longhurst$Chl.class. <- as.factor(longhurst$Chl.class.)
+```
+# Alpha Diversity & Richness
+# Calculate alpha diversity (Observed richness and Shannon diversity)
+```{r}
+alpha_div <- estimate_richness(pw, measures = c("Observed", "Shannon")) #with pw
+alpha_div$SampleID <- rownames(alpha_div)
+```
+
+# Metadata
+```{r}
+# create metadata
+metadata <- pw@sam_data
+table(metadata$environment_.material.)
+metadata$environment_.material.[metadata$environment_.material. == "marine arctic ocean"] <- "Marine Arctic Ocean"
+
+# Extract metadata
+metadata <- data.frame(sample_data(pw))
+metadata$SampleID <- rownames(metadata)
+# Merge diversity and metadata
+data_plot <- merge(alpha_div, metadata, by = "SampleID")
+# Create Absolute Latitude column
+data_plot$Abs_Latitude <- abs(data_plot$Latitude)
+```
+
+## Explore Data
+```{r}
+## explore data
+unique(pw@sam_data$Continent)
+unique(pw@sam_data$Collection)
+table(pw@sam_data$environment_.material.)
+# match Seawater with saltwater & rename marine arctic ocean
+pw@sam_data$environment_.material.[pw@sam_data$environment_.material. == "saltwater"] <- "Saltwater"
+pw@sam_data$environment_.material.[pw@sam_data$environment_.material. == "Seawater"] <- "Saltwater"
+pw@sam_data$environment_.material.[pw@sam_data$environment_.material. == "marine arctic ocean"] <- "Marine Arctic Ocean"
+```
+# Plot first Base Map
+## aggregate data
+```{r}
+## Plot the map
+# Base world map
+nrow(pw@sam_data)
+df.20 <- metadata[1:752,] # same as metadata ??
+
+# Aggregate data to count samples per locality (longitude and latitude)
+df.aggregated <- df.20 %>%
+  group_by(Longitude, Latitude, environment_.biome.) %>%
+  summarise(sample_count = n(), .groups = "drop")
+# Convert to an sf object for spatial plotting
+df.sf <- st_as_sf(df.aggregated, coords = c("Longitude", "Latitude"), crs = 4326)
+# Load world map with gray background
+world <- ne_countries(scale = "medium", returnclass = "sf")
+# Define color mapping with a colorblind-friendly palette
+color_map <- c(
+  "Water" = "#377eb8",    # DodgerBlue
+  "Organism" = "#984ea3", # DarkOrange
+  "Other" = "#4daf4a",    # LimeGreen
+  "Mineral" = "#ff7f00"   # Crimson
+)
+```
+
+## Longhurst Data & Richness
+```{r}
+longhurst_richness_map <- ggplot() +
+  geom_sf(data = longhurst, fill = "lightblue", color = "gray60", size = 0.2) +  # Longhurst provinces
+  borders("world", colour = "gray50", fill = "gray90") +                         # World map
+  geom_point(data = data_plot, aes(x = Longitude, y = Latitude, color = Observed),
+             size = 2, alpha = 0.8) +                                            # Fixed size, colored by richness
+  scale_color_viridis_c(option = "plasma", name = "ASV Richness") +             # Color gradient
+  coord_sf() +                                                                   # Coordinate system for sf
+  theme_minimal() +
+  labs(title = "Global Map of Microbial Richness",
+       x = "Longitude", y = "Latitude") +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+print(longhurst_richness_map)
+```
+## Plot map only with samples
+```{r}
+ggplot() +
+  # Add world map in gray
+  geom_sf(data = world, fill = "gray90", color = "gray70") +
+  # Add sample points with color based on environment biome
+  geom_sf(data = df.sf, aes(color = environment_.biome.), alpha = 0.7) +
+  scale_color_manual(values = color_map) +  # Apply custom colors
+  scale_size_continuous(range = c(2, 12)) +  # Adjust point sizes
+  theme_minimal() +
+  labs(
+    title = "MiCoDa Version 2.0",
+    subtitle = "Primer V4, Soil",
+    color = "Environment Biome",
+    size = "Sample Count"
+  ) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 12)
+  )
+```
+## Shannon Diversity Analysis by Continent (with data_plot)
+```{r}
+ggplot(data_plot, aes(x = Continent, y = Shannon, fill = Continent)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) +  # no outliers, more transparent boxes
+  geom_jitter(width = 0.2, size = 2, alpha = 0.6) +  # points for all samples
+  theme_minimal() +
+  labs(
+    title = "Shannon Diversity by Continent",
+    y = "Shannon Index",
+    x = ""
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  scale_fill_brewer(palette = "Set1")  # optional: nice color palette
+```
+# Richness Analysis by Continent 
+## with data_plot
+```{r}
+ggplot(data_plot, aes(x = Continent, y = Observed, fill = Continent)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) +  # no outliers, more transparent boxes
+  geom_jitter(width = 0.2, size = 2, alpha = 0.6) +  # points for all samples
+  theme_minimal() +
+  labs(
+    title = "Species Richness by Continent",
+    y = "Richness",
+    x = ""
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  scale_fill_brewer(palette = "Set1")  # different color palette for variety
+```
+## Global Richness Map
+### Plot richness (Observed ASVs) globally
+```{r}
+richness_map <- ggplot(data_plot, aes(x = Longitude, y = Latitude)) +
+  borders("world", colour = "gray50", fill = "gray90") +
+  geom_point(aes(color = Observed), size = 2, alpha = 0.8) +
+  scale_color_viridis_c(option = "plasma", name = "ASV Richness") +  # Color gradient
+  coord_fixed() +
+  theme_minimal() +
+  labs(title = "Global Map of Microbial Richness",
+       x = "Longitude", y = "Latitude") +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) 
+print(richness_map)
+# hat Tade schon gemacht
+```
+## Global Diversity Map
+### Plot richness (Observed ASVs) globally
+```{r}
+Diversity_map <- ggplot(data_plot, aes(x = Longitude, y = Latitude, size = Shannon)) +
+  borders("world", colour = "gray50", fill = "gray90") +
+  geom_point(alpha = 0.7, color = "darkgreen") +
+  coord_fixed() +
+  theme_minimal() +
+  labs(title = "Global Map of Microbial Diversity",
+       x = "Longitude", y = "Latitude") +  
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) 
+print(Diversity_map)
+```
+# Change of Richness by Latitude (Diversity gradients)
+## first match both data sets together with sf
+```{r}
+# Make sure data_plot has Longitude and Latitude in decimal degrees
+data_plot_sf <- st_as_sf(data_plot, coords = c("Longitude", "Latitude"), crs = 4326)
+# If not already set, longhurst in same CRS
+longhurst <- st_transform(longhurst, crs = 4326)
+# Check which geometries are invalid
+invalid_geoms <- st_is_valid(longhurst, reason = TRUE)
+table(invalid_geoms)
+# Fix invalid geometries using st_make_valid()
+longhurst_valid <- st_make_valid(longhurst)
+st_crs(longhurst_valid)
+st_crs(data_plot_sf)
+#spatial join with same CRS
+data_joined <- st_join(data_plot_sf, longhurst_valid[, c("PROVCODE", "Prod.Class.")])
+# convert back into original data frame
+data_joined <- as.data.frame(data_joined)
+# check new columns
+names(data_joined)
+```
+# Plot Chlorophyll Class (Productivity) with ASV Richness of Communities
+## with all data
+```{r}
+library(ggpubr)  # for stat_regline_equation()
+
+# Ensure Chl.class. is a factor for ordered categorical x-axis
+data_joined$Chl.class. <- as.factor(data_joined$Prod.Class.)
+nrow(data_joined)
+
+plot_ProdClass <- ggplot(data_joined, aes(x = Prod.Class., y = Observed)) +
+  geom_boxplot(aes(fill = Chl.class.), alpha = 0.4, outlier.shape = NA) +  # Transparent boxplots
+  geom_jitter(aes(color = Chl.class.), width = 0.2, alpha = 0.6, size = 1.5) +  # Points on top
+  stat_summary(fun = mean, geom = "point", shape = 20, size = 3, color = "black") +  # Mean indicator
+  scale_color_brewer(palette = "Set1", name = "Chlorophyll Class") +
+  scale_fill_brewer(palette = "Set1", name = "Chlorophyll Class") +
+  labs(
+    title = "ASV Richness Across Chlorophyll Classes",
+    x = "Productivity Class",
+    y = "ASV Richness"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14),
+    legend.position = "none"  # Hide if not needed
+  )
+print(plot_ProdClass)
+```
+black points show means. Class 3 data is super sparse --> shows lowest significance in lm
+### plot Chlorophyll productivity with richness 
+```{r}
+productivity_map <- ggplot() +
+  geom_sf(data = longhurst, aes(fill = Prod.Class.), color = "gray60", size = 0.2) +  # Fill by Chl.class.
+  borders("world", colour = "gray50", fill = "gray90") +                             # World map layer
+  geom_point(data = data_plot, aes(x = Longitude, y = Latitude, color = Observed),
+             alpha = 0.7, size = 2) +                                                # Microbial points color gradient
+    scale_color_viridis_c(option = "plasma", name = "ASV Richness") +             # Color gradient
+  coord_sf() +                                                                       # Coordinate system
+  scale_fill_manual(
+    values = c(
+      "1" = "#FFFFCC",   # Light yellow
+      "2" = "#CCFF99",   # Light green
+      "3" = "#99FF99",   # Green
+      "4" = "#33CC00",   # Green (same as 3)
+      "5" = "darkgreen"  # Dark green
+    ),
+    name = "Productivity Class",
+    na.value = "lightgray"
+  ) +                      # Color scale
+  theme_minimal() +
+  labs(title = "Global Map of Microbial ASV Richness",
+       x = "Longitude", y = "Latitude") +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+print(productivity_map)
+```
+### apply LM to check for significance
+```{r}
+lm_ASVProd <- lm(Observed ~ Prod.Class., data = data_joined)
+summary(lm_ASVProd) # applies a regression
+```
+Rsquared are super low ...
+
+### use ANOVA instead
+```{r}
+anova_model <- lm(Observed ~ Prod.Class., data = data_joined)
+anova(anova_model) # compares means of the classes
+
+#post-hoc test
+library(emmeans)
+# Get estimated marginal means
+emm <- emmeans(anova_model, ~ Prod.Class.)
+
+# Pairwise comparisons with Tukey adjustment
+posthoc_results <- pairs(emm, adjust = "tukey")
+
+print(posthoc_results)
+```
+
+```{r}
+plot(emm)
+```
+## instead of classes use productivity as continuous variable
+### add productivity (in gC/m²*d) to data_joined
+```{r}
+# match productivity column into into longhurst from lc:
+ longhurst <- longhurst %>%
+   left_join(lc %>% select(PROVCODE, Productivity.gC.m..d.), by = "PROVCODE")
+ head(longhurst) 
+# --> or directly into data_joined
+
+
+# match productivity column into into data_joined from longhurst
+data_joined <- data_joined %>%
+  left_join(lc %>% select(PROVCODE, Productivity.gC.m..d.), by = "PROVCODE")
+names(data_joined)
+table(data_joined$productivity, useNA = "ifany") # shows NA if any
+```
+### quick scatter plot 
+```{r}
+sp_ASV_Prod <- ggplot(data_joined, aes(x = Productivity.gC.m..d., y = Observed)) +
+  geom_point(alpha = 0.6, color = "darkblue") +
+  geom_smooth(method = "lm", color = "gray40", se = TRUE) +  # Optional regression line
+  theme_minimal() +
+  labs(
+    title = "ASV Richness vs Productivity",
+    x = "Productivity",
+    y = "ASV Richness"
+  )
+
+colnames(data_joined)
+print(sp_ASV_Prod)
+```
+# subsample to balance data
+```{r}
+# check sample count per class
+table(data_joined$Chl.class.) # 1)422  2)57   3)4  4)15 5)109 
+
+# Step 1: Get target sample size from class "4"
+target_n <- data_joined %>%
+  filter(Chl.class. == "4") %>%
+  nrow()
+
+# Step 2: Safely subsample each group to size `target_n` (or fewer if group is smaller)
+data_balanced <- data_joined %>%
+  group_by(Chl.class.) %>%
+  group_modify(~ slice_sample(.x, n = min(nrow(.x), target_n))) %>%
+  ungroup()
+
+nrow(data_balanced)
+is.na(data_balanced$Chl.class.)
+```
+## scatter plot with balanced data
+```{r}
+data_balanced$Productivity.gC.m..d..y <- NULL
+
+sp_balanced <- ggplot(data_balanced, aes(x = Productivity.gC.m..d..x, y = Observed)) +
+  geom_point(alpha = 0.6, color = "darkblue") +
+  geom_smooth(method = "lm", color = "gray40", se = TRUE) +  # Optional regression line
+  theme_minimal() +
+  labs(
+    title = "ASV Richness vs Productivity",
+    x = "Productivity",
+    y = "ASV Richness"
+  )
+
+print(sp_balanced)
+```
+### boxplot with balanced data
+```{r}
+# Remove rows with NA in Chl.class. or Observed
+data_balanced_clean <- data_balanced %>%
+  filter(!is.na(Chl.class.), !is.na(Observed))
+
+colnames(data_balanced)
+
+plot_ProdClass <- ggplot(data_balanced, aes(x = Prod.Class., y = Observed)) +
+  geom_boxplot(aes(fill = Prod.Class.), alpha = 0.4, outlier.shape = NA) +  # Transparent boxplots
+  geom_jitter(aes(color = Prod.Class.), width = 0.2, alpha = 0.6, size = 1.5) +  # Points on top
+  stat_summary(fun = mean, geom = "point", shape = 20, size = 3, color = "black") +  # Mean indicator
+  scale_color_brewer(palette = "Set1", name = "Chlorophyll Class") +
+  scale_fill_brewer(palette = "Set1", name = "Chlorophyll Class") +
+  labs(
+    title = "ASV Richness Across Productivity Classes",
+    x = "Productivity Class",
+    y = "ASV Richness"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14),
+    legend.position = "none"  # Hide if not needed
+  )
+print(plot_ProdClass)
+```
+--> can we do a stats analysis on that? does this make sense? 
+
+### apply LM to check for significance
+```{r}
+lm_model_balanced <- lm(Observed ~ Chl.class., data = data_balanced_clean)
+summary(lm_ASVChl) # applies a regression
+```
+Rsquared are super low ...
+### use ANOVA instead
+```{r}
+anova_model_balanced <- lm(Observed ~ Chl.class., data = data_balanced_clean)
+anova(anova_model_balanced) # compares means of the classes
+
+#post-hoc test
+library(emmeans)
+# Get estimated marginal means
+emm_balanced <- emmeans(anova_model_balanced, ~ Chl.class.)
+
+# Pairwise comparisons with Tukey adjustment
+posthoc_results_balanced <- pairs(emm_balanced, adjust = "tukey")
+
+print(posthoc_results_balanced)
+```
+
+```{r}
+plot(emm)
+```
+
+
+
+# Subsampling with Tade's code:
+```{r}
+# Remove rows with NA in Chl.class. or Observed
+data_filtered <- data_joined %>%
+  filter(!is.na(Prod.Class.), !is.na(Observed))
+
+# 1. Count number of observations per Predictor ####
+data_filtered %>%
+  count(Prod.Class.)
+```
+--> exclude Class 3 & 4 because of sparse data.
+```{r}
+# 2. Exclude levels of predictor with really low observations ####
+
+data_filtered <- data_filtered %>%
+  filter(!Prod.Class. %in% c(3, 4))
+```
+
+```{r}
+# 3. Bring the remaining levels of the predictor to the same number of observations ####
+
+# Find the minimum group size
+min_n <- data_filtered %>%
+  count(Prod.Class.) %>%
+  summarise(min_n = min(n)) %>%
+  pull(min_n)
+
+# Downsample each group to the same size
+data_balanced <- data_filtered %>%
+  group_by(Prod.Class.) %>%
+  slice_sample(n = min_n) %>%
+  ungroup()
+
+data_balanced$Prod.Class. <- as.factor(data_balanced$Prod.Class.)
+```
+--> results in 180 rows
+
+```{r}
+# 4. Run your models ####
+
+model_ProdClass <- lm(Observed ~ Prod.Class., data = data_balanced) 
+
+#diagnostic plots
+check_model(model_ProdClass, check = c("homogeneity", "linearity", "outliers", "normality"))
+
+#if assumptions not met, try to log-transforn the response
+#hist(data_balanced$response)
+#data_balanced$response_log <- log(data_balanced$response) 
+#run  model again with response_log
+
+# for regression: 
+summary(model_ProdClass)
+
+# if you have categorical predictor and want to compare means
+# or if you perform ANCOVA (for interaction models):
+anova(model_ProdClass)
+
+#if significant effect in anova, proceed with posthoc test for effect direction:
+emm <- emmeans(model_ProdClass, ~ Prod.Class.)
+
+# Pairwise comparisons with Tukey adjustment
+posthoc_results <- pairs(emm, adjust = "tukey")
+
+print(posthoc_results)
+```
+
+```{r}
+# 6. After posthoc (emmeans) prepare results to include into boxplot ####
+
+# perform posthoc
+ 
+(model_means <- emmeans(object = model_ProdClass ,
+                        specs = ~ Prod.Class.)) 
+```
+
+```{r}
+
+library(emmeans)
+library(multcomp)
+# Main effect type
+(model_means_cld <- cld(object = model_means,
+                        adjust = "sidak", #applies the Sid?k correction, which adjusts p-values to reduce the likelihood of false positives when performing multiple pairwise comparisons
+                        reversed=T, # makes "a" the letter for the highest mean
+                        Letter = letters, #Uses lowercase letters (a, b, c, ...) instead of default uppercase
+                        alpha = 0.05)) #Sets the significance level at 5% for determining group differences.
+```
+################################################################################
+# Use uniform data set with Lena
+```{r}
+nrow(data_filtered) # no NAs
+```
+
+```{r}
+nrow(data_joined) # all data
+```
+
+```{r}
+nrow(data_balanced) # ProdClasses
+```
+
+```{r}
+
+```
+
